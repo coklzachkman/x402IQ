@@ -4,7 +4,7 @@ A high-performance, secure protocol implementation for distributed systems and n
 
 ## Overview
 
-x402IQ is a robust protocol designed for reliable message transmission in distributed networks. It provides secure communication with built-in checksum validation, automatic message tracking, and comprehensive error handling.
+x402IQ is a robust protocol designed for reliable message transmission and transaction in distributed networks. It provides secure communication with built-in checksum validation, automatic message tracking, and comprehensive error handling.
 
 ## Features
 
