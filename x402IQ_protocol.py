@@ -3,8 +3,11 @@ x402IQ Protocol Implementation
 A high-performance protocol implementation for distributed systems
 """
 
+import base64
+import gzip
 import hashlib
 import json
+import logging
 import time
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
@@ -34,6 +37,7 @@ class ProtocolHeader:
     source: str
     destination: str
     checksum: str
+    compressed: bool = False  # New field for compression support
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert header to dictionary"""
@@ -45,6 +49,9 @@ class ProtocolHeader:
     def from_dict(cls, data: Dict[str, Any]) -> 'ProtocolHeader':
         """Create header from dictionary"""
         data['message_type'] = MessageType(data['message_type'])
+        # Handle optional compressed field for backward compatibility
+        if 'compressed' not in data:
+            data['compressed'] = False
         return cls(**data)
 
 
@@ -77,6 +84,36 @@ class ProtocolMessage:
     def from_json(cls, json_str: str) -> 'ProtocolMessage':
         """Deserialize message from JSON string"""
         return cls.from_dict(json.loads(json_str))
+    
+    @staticmethod
+    def compress_payload(payload: Dict[str, Any]) -> str:
+        """
+        Compress payload data using gzip
+        
+        Args:
+            payload: Payload dictionary
+            
+        Returns:
+            Base64 encoded compressed string
+        """
+        json_str = json.dumps(payload)
+        compressed = gzip.compress(json_str.encode('utf-8'))
+        return base64.b64encode(compressed).decode('utf-8')
+    
+    @staticmethod
+    def decompress_payload(compressed_str: str) -> Dict[str, Any]:
+        """
+        Decompress payload data using gzip
+        
+        Args:
+            compressed_str: Base64 encoded compressed string
+            
+        Returns:
+            Decompressed payload dictionary
+        """
+        compressed_bytes = base64.b64decode(compressed_str.encode('utf-8'))
+        decompressed = gzip.decompress(compressed_bytes)
+        return json.loads(decompressed.decode('utf-8'))
 
 
 class X402IQProtocol:
@@ -94,17 +131,35 @@ class X402IQProtocol:
     PROTOCOL_VERSION = "1.0"
     CHECKSUM_ALGORITHM = "sha256"
 
-    def __init__(self, node_id: str):
+    def __init__(self, node_id: str, enable_logging: bool = True, log_level: int = logging.INFO,
+                 default_timeout: int = 30):
         """
         Initialize protocol instance
         
         Args:
             node_id: Unique identifier for this node
+            enable_logging: Whether to enable logging
+            log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+            default_timeout: Default timeout for requests in seconds
         """
         self.node_id = node_id
         self.message_counter = 0
         self.received_messages: Dict[str, ProtocolMessage] = {}
         self.outstanding_requests: Dict[str, float] = {}
+        self.default_timeout = default_timeout
+        
+        # Setup logging
+        if enable_logging:
+            self.logger = logging.getLogger(f"x402IQ.{node_id}")
+            self.logger.setLevel(log_level)
+            if not self.logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter(
+                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+                ))
+                self.logger.addHandler(handler)
+        else:
+            self.logger = None
 
     def _generate_message_id(self) -> str:
         """Generate unique message ID"""
@@ -137,13 +192,22 @@ class X402IQProtocol:
             True if checksum is valid, False otherwise
         """
         calculated = self._calculate_checksum(message.payload)
-        return calculated == message.header.checksum
+        is_valid = calculated == message.header.checksum
+        
+        if self.logger and not is_valid:
+            self.logger.warning(
+                f"Invalid checksum for message {message.header.message_id} "
+                f"from {message.header.source}"
+            )
+        
+        return is_valid
 
     def create_message(
         self,
         message_type: MessageType,
         destination: str,
-        payload: Dict[str, Any]
+        payload: Dict[str, Any],
+        compress: bool = False
     ) -> ProtocolMessage:
         """
         Create a new protocol message
@@ -152,12 +216,23 @@ class X402IQProtocol:
             message_type: Type of message
             destination: Destination node ID
             payload: Message payload data
+            compress: Whether to compress the payload
             
         Returns:
             Complete protocol message
         """
         message_id = self._generate_message_id()
-        checksum = self._calculate_checksum(payload)
+        
+        # Compress if requested
+        if compress:
+            compressed_payload = ProtocolMessage.compress_payload(payload)
+            actual_payload = {'_compressed': True, '_data': compressed_payload}
+            checksum = self._calculate_checksum(actual_payload)
+            header_compressed = True
+        else:
+            checksum = self._calculate_checksum(payload)
+            actual_payload = payload
+            header_compressed = False
 
         header = ProtocolHeader(
             version=self.PROTOCOL_VERSION,
@@ -166,14 +241,21 @@ class X402IQProtocol:
             timestamp=time.time(),
             source=self.node_id,
             destination=destination,
-            checksum=checksum
+            checksum=checksum,
+            compressed=header_compressed
         )
 
-        message = ProtocolMessage(header=header, payload=payload)
+        message = ProtocolMessage(header=header, payload=actual_payload)
 
         # Track requests for timeout handling
         if message_type == MessageType.REQUEST:
             self.outstanding_requests[message_id] = time.time()
+
+        if self.logger:
+            self.logger.debug(
+                f"Created {message_type.value} message ID {message_id} "
+                f"to {destination}{' [compressed]' if compress else ''}"
+            )
 
         return message
 
@@ -305,6 +387,11 @@ class X402IQProtocol:
         """
         # Check if message is for this node
         if message.header.destination != self.node_id:
+            if self.logger:
+                self.logger.debug(
+                    f"Rejected message {message.header.message_id} - "
+                    f"not addressed to this node"
+                )
             return False, "Message not addressed to this node"
 
         # Validate checksum
@@ -313,14 +400,42 @@ class X402IQProtocol:
 
         # Check for duplicate message
         if message.header.message_id in self.received_messages:
+            if self.logger:
+                self.logger.warning(
+                    f"Duplicate message ID {message.header.message_id} "
+                    f"from {message.header.source}"
+                )
             return False, "Duplicate message ID"
 
         # Validate version
         if message.header.version != self.PROTOCOL_VERSION:
+            if self.logger:
+                self.logger.warning(
+                    f"Version mismatch for message {message.header.message_id}: "
+                    f"expected {self.PROTOCOL_VERSION}, got {message.header.version}"
+                )
             return False, "Protocol version mismatch"
+
+        # Decompress if needed
+        if message.payload.get('_compressed'):
+            try:
+                decompressed = ProtocolMessage.decompress_payload(message.payload['_data'])
+                message.payload = decompressed
+                if self.logger:
+                    self.logger.debug(f"Decompressed message {message.header.message_id}")
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Failed to decompress message: {e}")
+                return False, "Failed to decompress payload"
 
         # Store received message
         self.received_messages[message.header.message_id] = message
+
+        if self.logger:
+            self.logger.debug(
+                f"Received {message.header.message_type.value} message "
+                f"{message.header.message_id} from {message.header.source}"
+            )
 
         return True, None
 
@@ -390,8 +505,15 @@ class X402IQProtocol:
         """Handle incoming ERROR message"""
         error_code = message.payload.get('error_code', '')
         error_message = message.payload.get('error_message', '')
-        # Default handler - override in subclass
-        print(f"Received error: {error_code} - {error_message}")
+        
+        if self.logger:
+            self.logger.error(
+                f"Received error from {message.header.source}: "
+                f"{error_code} - {error_message}"
+            )
+        else:
+            # Default handler - override in subclass
+            print(f"Received error: {error_code} - {error_message}")
 
     def cleanup_old_messages(self, max_age_seconds: int = 3600) -> int:
         """
@@ -424,6 +546,50 @@ class X402IQProtocol:
 
         return len(to_remove) + len(to_remove_requests)
 
+    def check_timeout(self, request_id: str, timeout: Optional[int] = None) -> bool:
+        """
+        Check if a request has timed out
+        
+        Args:
+            request_id: ID of the request to check
+            timeout: Timeout in seconds (uses default if None)
+            
+        Returns:
+            True if request has timed out, False otherwise
+        """
+        if request_id not in self.outstanding_requests:
+            return False
+        
+        timeout_seconds = timeout if timeout is not None else self.default_timeout
+        elapsed = time.time() - self.outstanding_requests[request_id]
+        return elapsed > timeout_seconds
+    
+    def cleanup_timed_out_requests(self, timeout: Optional[int] = None) -> List[str]:
+        """
+        Clean up timed out requests
+        
+        Args:
+            timeout: Timeout in seconds (uses default if None)
+            
+        Returns:
+            List of timed out request IDs
+        """
+        timeout_seconds = timeout if timeout is not None else self.default_timeout
+        timed_out = []
+        current_time = time.time()
+        
+        for req_id, req_time in list(self.outstanding_requests.items()):
+            if current_time - req_time > timeout_seconds:
+                timed_out.append(req_id)
+                del self.outstanding_requests[req_id]
+                
+                if self.logger:
+                    self.logger.warning(
+                        f"Request {req_id} timed out after {timeout_seconds}s"
+                    )
+        
+        return timed_out
+
     def get_stats(self) -> Dict[str, Any]:
         """
         Get protocol statistics
@@ -436,7 +602,8 @@ class X402IQProtocol:
             'total_messages_sent': self.message_counter,
             'messages_received': len(self.received_messages),
             'outstanding_requests': len(self.outstanding_requests),
-            'protocol_version': self.PROTOCOL_VERSION
+            'protocol_version': self.PROTOCOL_VERSION,
+            'default_timeout': self.default_timeout
         }
 
 
@@ -466,4 +633,5 @@ if __name__ == "__main__":
     # Get statistics
     print("Node A stats:", node_a.get_stats())
     print("Node B stats:", node_b.get_stats())
+
 
