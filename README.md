@@ -317,6 +317,17 @@ timed_out_ids = node.cleanup_timed_out_requests()
 print(f"Cleaned up {len(timed_out_ids)} timed out requests")
 ```
 
+## MCP Integration
+
+x402IQ Protocol can be integrated with **MCP (Model Context Protocol)** to enable secure AI assistant tool access:
+
+- **Transport Layer**: Wrap MCP messages in x402IQ for secure, reliable delivery
+- **Distributed Tools**: Run MCP tools across multiple x402IQ nodes
+- **Tool Exposure**: Expose x402IQ services as MCP-compatible tools
+- **Network-Aware AI**: Enable AI assistants to access tools via x402IQ network
+
+See `MCP_INTEGRATION_PROPOSAL.md` for architecture details and `examples/mcp_integration_example.py` for working examples.
+
 ## Use Cases
 
 - **Microservices Communication**: Inter-service messaging in distributed systems
@@ -324,6 +335,7 @@ print(f"Cleaned up {len(timed_out_ids)} timed out requests")
 - **Blockchain Nodes**: Peer-to-peer network protocols
 - **Message Queues**: Reliable message delivery systems
 - **Distributed Computing**: Task coordination and synchronization
+- **AI Tool Integration**: Secure MCP tool execution via x402IQ network
 
 ## Contributing
 
