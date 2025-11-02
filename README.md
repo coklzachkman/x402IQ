@@ -4,7 +4,7 @@ A high-performance, secure protocol implementation for distributed systems and n
 
 ## Overview
 
-x402IQ is a robust protocol designed for reliable message transmission and transactions in distributed networks. It provides secure communication with built-in checksum validation, automatic message tracking, and comprehensive error handling.
+x402IQ is a robust protocol designed for reliable message transmission in distributed networks. It provides secure communication with built-in checksum validation, automatic message tracking, and comprehensive error handling.
 
 ## Features
 
@@ -16,6 +16,9 @@ x402IQ is a robust protocol designed for reliable message transmission and trans
 - **Protocol Versioning**: Version validation for compatibility checking
 - **Cleanup Management**: Automatic cleanup of old messages and outstanding requests
 - **Statistics**: Built-in protocol statistics and monitoring
+- **Logging Framework**: Comprehensive logging with configurable levels for debugging and monitoring
+- **Timeout Management**: Built-in timeout handling and cleanup for outstanding requests
+- **Message Compression**: Optional gzip compression for large payloads to reduce bandwidth
 
 ## Installation
 
@@ -176,7 +179,7 @@ This ensures global uniqueness and prevents collisions.
 
 #### Methods
 
-- `create_message(message_type, destination, payload)` - Create a new protocol message
+- `create_message(message_type, destination, payload, compress=False)` - Create a new protocol message
 - `create_request(destination, action, params)` - Create a REQUEST message
 - `create_response(request_message, result, success)` - Create a RESPONSE message
 - `create_error_response(request_message, error_code, error_message)` - Create an ERROR message
@@ -184,6 +187,8 @@ This ensures global uniqueness and prevents collisions.
 - `receive_message(message)` - Validate and store received message
 - `process_message(message)` - Process message and return response
 - `cleanup_old_messages(max_age_seconds)` - Remove old messages from storage
+- `check_timeout(request_id, timeout=None)` - Check if a request has timed out
+- `cleanup_timed_out_requests(timeout=None)` - Clean up timed out requests
 - `get_stats()` - Get protocol statistics
 
 ### Class: ProtocolMessage
@@ -194,6 +199,8 @@ This ensures global uniqueness and prevents collisions.
 - `to_json()` - Serialize message to JSON string
 - `from_dict(data)` - Create message from dictionary
 - `from_json(json_str)` - Deserialize message from JSON string
+- `compress_payload(payload)` - Static method to compress payload data
+- `decompress_payload(compressed_str)` - Static method to decompress payload data
 
 ## Error Handling
 
@@ -238,6 +245,78 @@ cleaned = node.cleanup_old_messages(max_age_seconds=3600)
 print(f"Cleaned up {cleaned} old messages")
 ```
 
+## Logging
+
+The protocol includes comprehensive logging for debugging and monitoring:
+
+```python
+import logging
+
+# Create node with logging enabled
+node = X402IQProtocol("node_A", enable_logging=True, log_level=logging.DEBUG)
+
+# All operations are logged
+request = node.create_request("node_B", "get_data", {"key": "value"})
+# Logs: "Created REQUEST message ID ... to node_B"
+
+# Disable logging for production
+node = X402IQProtocol("node_A", enable_logging=False)
+```
+
+Logging captures:
+- Message creation and receipt
+- Checksum validation failures
+- Duplicate message detection
+- Timeout events
+- Compression/decompression operations
+
+## Message Compression
+
+For large payloads, enable compression to reduce bandwidth:
+
+```python
+# Create a large payload
+large_data = {
+    "items": list(range(10000)),
+    "description": "A" * 50000
+}
+
+# Create compressed message
+message = node.create_message(
+    MessageType.NOTIFICATION,
+    "target_node",
+    large_data,
+    compress=True  # Enable compression
+)
+
+# Compression is automatic on receive
+response = receiver.process_message(message)
+# Payload is automatically decompressed
+```
+
+Compression uses gzip and can significantly reduce message size for large payloads.
+
+## Timeout Management
+
+Track and handle timeouts for outstanding requests:
+
+```python
+# Create node with custom timeout (default: 30 seconds)
+node = X402IQProtocol("node_A", default_timeout=10)
+
+# Send a request
+request = node.create_request("server", "long_task", {})
+request_id = request.header.message_id
+
+# Check if request has timed out
+is_timed_out = node.check_timeout(request_id)
+print(f"Timed out: {is_timed_out}")
+
+# Clean up all timed out requests
+timed_out_ids = node.cleanup_timed_out_requests()
+print(f"Cleaned up {len(timed_out_ids)} timed out requests")
+```
+
 ## Use Cases
 
 - **Microservices Communication**: Inter-service messaging in distributed systems
@@ -267,6 +346,14 @@ For questions, issues, or contributions:
 - Contact the maintainers
 
 ## Version History
+
+- **1.1.0** - Enhanced release
+  - Added comprehensive logging framework
+  - Added timeout management for requests
+  - Added message compression support
+  - Added comprehensive test suite
+  - Added example scripts
+  - Enhanced error handling
 
 - **1.0.0** - Initial release
   - Core protocol implementation
